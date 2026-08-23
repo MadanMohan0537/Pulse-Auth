@@ -1,24 +1,40 @@
 # Pulse Auth
 
-Standalone **OAuth2 / OIDC** identity service for the Pulse platform — built on Cloudflare Workers, D1, Durable Objects, and Queues.
+**Standalone OAuth2 / OIDC identity for the Pulse platform** — email/password, GitHub OAuth, TOTP MFA, rotating refresh tokens with reuse detection, multi-tenant RBAC, and Durable Object sessions — all on Cloudflare Workers.
 
-Other Pulse services (dashboards, feature flags, analytics, notifications) validate JWT access tokens issued here. Auth events such as `user.created` and `user.login` are persisted and published to a queue for downstream consumers.
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-## Why this exists
+> Every other Pulse service (dashboards, feature flags, analytics, notifications) validates JWTs issued here. Auth events like `user.created` and `user.login` flow to a queue that feeds analytics and notifications.
 
-Most teams bolt on Auth0 or Firebase for MVPs. That works — and hides the hard parts. Pulse Auth is the foundation layer I wanted to **own**: token lifecycle, multi-tenancy, MFA, and session revocation under edge constraints.
+---
 
-## Features
+## Why I built this
 
-| Area | What you get |
+Every product needs authentication. Most developers plug in Auth0 or Firebase — fine for quick MVPs, but it hides the complexity of security, token management, multi-tenancy, and MFA.
+
+To build a **production-grade platform**, I wanted to understand and control this foundation myself: token lifecycle, session revocation, org isolation, and edge constraints on Cloudflare Workers (no long-lived connections; Durable Objects for state).
+
+## What problem it solves
+
+Pulse Auth is the identity backbone for Pulse. Without it, nothing else works — every service needs identity and permissions. It gives you:
+
+| Capability | Detail |
 | --- | --- |
-| Sign-in | Email/password (PBKDF2), GitHub OAuth, TOTP MFA + recovery codes |
-| Tokens | RS256 JWT access tokens · rotating refresh tokens |
-| Hardening | Refresh **reuse detection** revokes the entire token family |
-| Tenancy | Organizations + RBAC (`owner` / `admin` / `member` / `viewer`) |
-| Sessions | Per-user **Durable Object** session store (create / touch / revoke) |
-| OIDC | `/.well-known/openid-configuration` + JWKS |
-| Events | `user.created`, `user.login`, `token.reuse_detected`, … → D1 + Queue |
+| **Sign-in** | Email/password (PBKDF2), GitHub OAuth, TOTP MFA + recovery codes |
+| **Tokens** | RS256 JWT access tokens · rotating refresh tokens |
+| **Hardening** | Refresh **reuse detection** revokes the entire token family |
+| **Tenancy** | Organizations + RBAC (`owner` / `admin` / `member` / `viewer`) |
+| **Sessions** | Per-user Durable Object store (create / touch / revoke) |
+| **OIDC** | Discovery document + JWKS for other Pulse services |
+| **Events** | `user.created`, `user.login`, `token.reuse_detected`, … → D1 + Queue |
+
+## Why this is advanced
+
+- **Token rotation + reuse detection** — the same class of control used by Google, Auth0, and other mature IdPs. If a stolen refresh token is replayed after rotation, the whole family is revoked and sessions are cleared.
+- **Multi-tenant RBAC** — careful data isolation and permission checks per organization.
+- **Edge-native design** — Workers + D1 + SQLite-backed Durable Objects, built for Cloudflare’s constraints rather than a classic always-on Node server.
 
 ## Architecture
 
@@ -41,38 +57,42 @@ Most teams bolt on Auth0 or Firebase for MVPs. That works — and hides the hard
 ### Refresh rotation & reuse detection
 
 1. Each login creates a **refresh token family**.
-2. Every `/v1/auth/refresh` **revokes** the presented token and mints a child.
-3. If a revoked token is presented again (theft + race), the **whole family is revoked**, all Durable Object sessions for that user are cleared, and `token.reuse_detected` is emitted.
+2. Every `POST /v1/auth/refresh` **revokes** the presented token and mints a child.
+3. If that revoked parent is presented again, the **whole family is revoked**, Durable Object sessions for the user are cleared, and `token.reuse_detected` is emitted.
 
-This is the same class of control used by mature IdPs (Auth0, Google, etc.).
+## Product angle
+
+See [`docs/PRD.md`](./docs/PRD.md) for personas (end user, admin) and success metrics:
+
+- Login success rate  
+- MFA adoption rate  
+- Token refresh success rate  
+- Time to revoke a compromised session  
 
 ## Quick start
 
-### Prerequisites
-
-- Node.js 20+
-- npm
-
-### Install & run locally
+**Requirements:** Node.js 20+, npm
 
 ```bash
+git clone https://github.com/MadanMohan0537/Pulse-Auth.git
+cd Pulse-Auth
 npm install
 cp .dev.vars.example .dev.vars
-# Edit .dev.vars — JWT_SECRET is required; GitHub vars are optional
+# Edit .dev.vars — set a long JWT_SECRET (GitHub OAuth vars are optional)
 
 npm run db:migrate:local
 npm run dev
 ```
 
-Open **[http://127.0.0.1:4545](http://127.0.0.1:4545)** for the branded console (register / sign-in / sessions / MFA).
+Open **http://127.0.0.1:4545** for the console (register, sign-in, sessions, MFA).
 
-> Queues: local `wrangler dev` will attempt to bind `AUTH_EVENTS`. If the queue producer is unavailable, events still land in the `auth_events` D1 table.
+> Events always persist to the `auth_events` D1 table. The `AUTH_EVENTS` queue binding is used when available (including local Wrangler simulation).
 
 ### Optional: GitHub OAuth
 
-1. Create a GitHub OAuth App.
-2. Set callback URL to `http://127.0.0.1:4545/v1/oauth/github/callback`.
-3. Put `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.dev.vars`.
+1. Create a GitHub OAuth App.  
+2. Callback URL: `http://127.0.0.1:4545/v1/oauth/github/callback`  
+3. Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.dev.vars`.
 
 ## API surface
 
@@ -81,7 +101,7 @@ Open **[http://127.0.0.1:4545](http://127.0.0.1:4545)** for the branded console 
 | Method | Path | Description |
 | --- | --- | --- |
 | `POST` | `/v1/auth/register` | Create user + owner workspace, return tokens |
-| `POST` | `/v1/auth/login` | Password login (returns `mfa_required` when needed) |
+| `POST` | `/v1/auth/login` | Password login (`mfa_required` when MFA is on) |
 | `POST` | `/v1/auth/refresh` | Rotate refresh token; reuse → family revoke |
 | `POST` | `/v1/auth/logout` | Revoke current session |
 | `GET` | `/v1/oauth/github/start` | Begin GitHub OAuth |
@@ -99,10 +119,10 @@ Open **[http://127.0.0.1:4545](http://127.0.0.1:4545)** for the branded console 
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET/POST` | `/v1/orgs` | List / create organizations |
-| `GET/PATCH` | `/v1/orgs/:id` | Read / update (permission-gated) |
-| `*` | `/v1/orgs/:id/members` | List / invite / role change / remove |
-| `GET/DELETE` | `/v1/sessions` | List or revoke sessions |
+| `GET` / `POST` | `/v1/orgs` | List / create organizations |
+| `GET` / `PATCH` | `/v1/orgs/:id` | Read / update (permission-gated) |
+| `*` | `/v1/orgs/:id/members` | List / invite / change role / remove |
+| `GET` / `DELETE` | `/v1/sessions` | List or revoke sessions |
 | `GET` | `/v1/me` | Current user + org context |
 
 ### Discovery
@@ -113,20 +133,22 @@ Open **[http://127.0.0.1:4545](http://127.0.0.1:4545)** for the branded console 
 | `GET` | `/.well-known/jwks.json` |
 | `GET` | `/health` |
 
-### Example: register
+### Examples
 
 ```bash
+# Register
 curl -s http://127.0.0.1:4545/v1/auth/register \
   -H 'content-type: application/json' \
   -d '{"email":"you@example.com","password":"CorrectHorse1","name":"You"}' | jq
-```
 
-### Example: refresh
-
-```bash
+# Refresh (rotation)
 curl -s http://127.0.0.1:4545/v1/auth/refresh \
   -H 'content-type: application/json' \
   -d '{"refresh_token":"<token>"}' | jq
+
+# Current user
+curl -s http://127.0.0.1:4545/v1/me \
+  -H "Authorization: Bearer <access_token>" | jq
 ```
 
 ## RBAC
@@ -139,21 +161,12 @@ curl -s http://127.0.0.1:4545/v1/auth/refresh \
 | `members:*` | read | read | full | full |
 | `billing:*` |  |  | read | full |
 
-## Product metrics (from the PRD)
-
-Tracked conceptually via `auth_events` (and the queue):
-
-- Login success rate  
-- MFA adoption rate (`user.mfa_enabled` / active users)  
-- Token refresh success rate  
-- Time to revoke a compromised session (DO revoke + refresh family revoke)
-
 ## Deploy to Cloudflare
 
 ```bash
 npx wrangler login
 npx wrangler d1 create pulse-auth
-# Paste the database_id into wrangler.jsonc
+# Paste database_id into wrangler.jsonc
 
 npx wrangler queues create pulse-auth-events
 npx wrangler d1 migrations apply pulse-auth --remote
@@ -161,7 +174,7 @@ npx wrangler secret put JWT_SECRET
 # optional:
 npx wrangler secret put GITHUB_CLIENT_SECRET
 
-# Set ISSUER / GITHUB_CLIENT_ID vars for production in wrangler.jsonc or the dashboard
+# Set production ISSUER / GITHUB_CLIENT_ID in wrangler.jsonc or the dashboard
 npm run deploy
 ```
 
@@ -169,13 +182,22 @@ npm run deploy
 
 ```
 src/
-  index.ts                 # Hono app
-  durable-objects/         # SessionManager (SQLite DO)
-  lib/                     # password, jwt, refresh, totp, rbac, events
-  routes/                  # auth, mfa, github, orgs, sessions, oidc
-  ui/                      # Landing + console pages
-migrations/                # D1 SQL migrations
+  index.ts              # Hono app entry
+  durable-objects/      # SessionManager (SQLite Durable Object)
+  lib/                  # password, jwt, refresh, totp, rbac, events
+  routes/               # auth, mfa, github, orgs, sessions, oidc
+  ui/                   # Landing + session console
+migrations/             # D1 SQL migrations
+docs/PRD.md             # Product requirements & metrics
 ```
+
+## Tech stack
+
+- **Runtime:** Cloudflare Workers  
+- **Router:** Hono  
+- **Data:** D1 (users, orgs, refresh families), Durable Objects (sessions)  
+- **Crypto:** Web Crypto + `jose` (RS256 JWT), `otpauth` (TOTP)  
+- **Messaging:** Cloudflare Queues (`AUTH_EVENTS`)
 
 ## Tests
 
@@ -185,16 +207,4 @@ npm test
 
 ## License
 
-MIT
-
-## Publishing this repo to GitHub
-
-This project lives on the Cursor agent remote by default. To publish under your GitHub account:
-
-```bash
-# Create an empty repo named pulse-auth on GitHub (no README), then:
-git remote add github https://github.com/MadanMohan0537/pulse-auth.git
-git push -u github main
-```
-
-Or ask the agent again after granting the GitHub integration permission to **create repositories**.
+MIT © [Madan Mohan](https://github.com/MadanMohan0537)
