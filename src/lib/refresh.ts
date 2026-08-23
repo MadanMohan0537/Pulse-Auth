@@ -58,15 +58,30 @@ export async function rotateRefreshToken(env: Env, presentedRaw: string) {
   }
 
   if (row.revoked_at) {
-    // Reuse detection: a previously rotated/revoked token was presented again.
-    await revokeFamily(env, row.family_id, "reuse_detected");
-    return {
-      ok: false as const,
-      reason: "reuse_detected" as const,
-      family_id: row.family_id,
-      user_id: row.user_id,
-      session_id: row.session_id,
-    };
+    // Reuse detection only when a rotated (parent) token is presented again.
+    const child = await env.DB.prepare(
+      "SELECT id FROM refresh_tokens WHERE parent_id = ? LIMIT 1",
+    )
+      .bind(row.id)
+      .first<{ id: string }>();
+
+    if (child) {
+      await env.DB.prepare(
+        "UPDATE refresh_tokens SET reused_at = COALESCE(reused_at, ?) WHERE id = ?",
+      )
+        .bind(nowIso(), row.id)
+        .run();
+      await revokeFamily(env, row.family_id);
+      return {
+        ok: false as const,
+        reason: "reuse_detected" as const,
+        family_id: row.family_id,
+        user_id: row.user_id,
+        session_id: row.session_id,
+      };
+    }
+
+    return { ok: false as const, reason: "invalid" as const };
   }
 
   if (new Date(row.expires_at).getTime() < Date.now()) {
@@ -98,19 +113,14 @@ export async function rotateRefreshToken(env: Env, presentedRaw: string) {
   };
 }
 
-export async function revokeFamily(
-  env: Env,
-  familyId: string,
-  reason: string,
-): Promise<number> {
+export async function revokeFamily(env: Env, familyId: string): Promise<number> {
   const when = nowIso();
   const result = await env.DB.prepare(
     `UPDATE refresh_tokens
-     SET revoked_at = COALESCE(revoked_at, ?),
-         reused_at = CASE WHEN ? = 'reuse_detected' THEN COALESCE(reused_at, ?) ELSE reused_at END
+     SET revoked_at = COALESCE(revoked_at, ?)
      WHERE family_id = ? AND revoked_at IS NULL`,
   )
-    .bind(when, reason, when, familyId)
+    .bind(when, familyId)
     .run();
   return result.meta.changes ?? 0;
 }

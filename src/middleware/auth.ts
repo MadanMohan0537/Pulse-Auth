@@ -41,7 +41,8 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
 
     c.set("user", claims);
     await next();
-  } catch {
+  } catch (err) {
+    console.error("requireAuth failed", err);
     return jsonError(401, "unauthorized", "Invalid or expired access token");
   }
 }

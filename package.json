@@ -24,5 +24,6 @@
     "typescript": "^5.5.2",
     "vitest": "^4.1.11",
     "wrangler": "^4.125.0"
-  }
+  },
+  "type": "module"
 }

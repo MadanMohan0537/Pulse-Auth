@@ -12,6 +12,7 @@ import { nowIso } from "./util";
 type ActiveKey = {
   kid: string;
   privateKey: CryptoKey;
+  publicKey: CryptoKey;
   publicJwk: JWK;
 };
 
@@ -28,7 +29,8 @@ async function ensureActiveKey(env: Env): Promise<ActiveKey> {
     const privateJwk = JSON.parse(row.private_jwk) as JWK;
     const publicJwk = JSON.parse(row.public_jwk) as JWK;
     const privateKey = (await importJWK(privateJwk, "RS256")) as CryptoKey;
-    memoryCache = { kid: row.kid, privateKey, publicJwk };
+    const publicKey = (await importJWK(publicJwk, "RS256")) as CryptoKey;
+    memoryCache = { kid: row.kid, privateKey, publicKey, publicJwk };
     return memoryCache;
   }
 
@@ -54,6 +56,7 @@ async function ensureActiveKey(env: Env): Promise<ActiveKey> {
   memoryCache = {
     kid,
     privateKey,
+    publicKey,
     publicJwk,
   };
   return memoryCache;
@@ -85,7 +88,7 @@ export async function issueAccessToken(
 
 export async function verifyAccessToken(env: Env, token: string) {
   const key = await ensureActiveKey(env);
-  const { payload } = await jwtVerify(token, key.privateKey, {
+  const { payload } = await jwtVerify(token, key.publicKey, {
     issuer: env.ISSUER,
     audience: "pulse",
   });
