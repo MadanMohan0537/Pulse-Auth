@@ -186,3 +186,15 @@ npm test
 ## License
 
 MIT
+
+## Publishing this repo to GitHub
+
+This project lives on the Cursor agent remote by default. To publish under your GitHub account:
+
+```bash
+# Create an empty repo named pulse-auth on GitHub (no README), then:
+git remote add github https://github.com/MadanMohan0537/pulse-auth.git
+git push -u github main
+```
+
+Or ask the agent again after granting the GitHub integration permission to **create repositories**.
