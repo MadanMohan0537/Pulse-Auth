@@ -10,6 +10,19 @@
 
 ---
 
+## Verify the security workflow locally
+
+After migrations and startup, register a test account, inspect its sessions, rotate a refresh token and confirm that reuse of the old token revokes the family. Enable MFA with a test authenticator and keep the returned recovery codes. Use disposable credentials during development.
+
+```bash
+npm run typecheck
+npm test
+```
+
+These commands check types and the configured Vitest suite. They do not constitute a production security audit. Before deployment, review issuer settings, secret management, database migrations, OAuth callbacks, event retention and account-recovery behavior for your application.
+
+For implementation review, begin with [JWT handling](src/lib/jwt.ts), [routes](src/routes/) and [migrations](migrations/).
+
 ## Why I built this
 
 Every product needs authentication. Most developers plug in Auth0 or Firebase — fine for quick MVPs, but it hides the complexity of security, token management, multi-tenancy, and MFA.
